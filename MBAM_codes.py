@@ -26,6 +26,12 @@ class diff_FIM:
     def g(self, θ:"Model parameters")->"FIM for parameters θ":
         J=self.J(θ)
         return np.einsum('im,in',J,J)
+    def eigval(self, θ:"Model parameters",k=0)->"kth eigenvalue for parameters θ":
+        g = self.g(θ)
+        return np.linalg.eigh(g)[0][k]
+    def eigvector(self, θ:"Model parameters",k=0)->"kth eigenvalue for parameters θ":
+        g = self.g(θ)
+        return np.linalg.eigh(g)[1][:,k]
     def detg(self,θ:"Model parameters")->"determinant of FIM":
         return np.linalg.det(self.g(θ))
     def signature(self,θ:"Model parameters")->"Metric signature":
@@ -168,13 +174,14 @@ class diff_FIM:
             #ret    = np.append(ret,ddθnew[i:])
         
         return ret
-    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,dmax=10)->"computes the geodesic equation":
+    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,dmax=10,T=0)->"computes the geodesic equation":
         def fun(V,t):
             return self.MBAM_RHS(V)
         V0,τ = self.find_MBAM_IC(θ,k)
-        T    = np.linspace(0,10*τ,100)#np.logspace(np.log10(τ),dmax+np.log10(τ),100)
+        if T is None:
+            T    = np.linspace(0,10*τ,100)#np.logspace(np.log10(τ),dmax+np.log10(τ),100)
         return τ, T,odeint(fun,V0,T)
-
+    
     
 def SymLogNorm(dg:"Values to plot w/ pcolormesh")->"Matplotlib lognorm":
     adg  = np.abs(dg)
@@ -266,3 +273,29 @@ class MBAM_plotting(diff_FIM):
         θ1, θ2, X, Y = self.construct_mesh(N)
         return θ1, θ2, X, Y,np.array([[ [f(np.array([t1,t2])) for f in F] for t1 in θ1] for t2 in θ2])
 
+    def bar_plot(self,ax:"Axis to plot on",*args:"Vectors to plot",xlabel='',ylabel='',plabels:"x tick labels"=None,labels:"Labels of vectors"=None,colors:"Vector colors"=None,lw=1)->"Adds a plot of eigenvectors as bar plots, filled if a component is positive, white if negative":
+        Nv = len(args)
+        bw = .5/Nv
+        for i in range(Nv):
+            v  = args[i]
+            if labels is not None and i<len(labels):
+                label = labels[i]
+            else:
+                label = ""
+            if colors is not None and i<len(colors):
+                color = colors[i]
+            else:
+                color = "k"
+            Nθ = np.size(v)
+            ax.bar(np.arange(Nθ)+bw,np.abs(v),.8/Nv, 
+                   color=np.where(v>0,color,"1.0"),
+                   edgecolor=color,label=label,lw=1)
+            bw+=1/Nv
+        ax.set_xticks(np.arange(0.5,Nθ+.5,1))
+        ax.set_yscale('log')
+        if plabels is not None:
+            ax.set_xticklabels(plabels)
+        else:
+            ax.set_xticklabels([r"$\theta^{"+"%d"%i+"}$" for i in range(Nθ)])
+        if labels is not None:
+            ax.legend()
