@@ -13,6 +13,28 @@ def N_sphere(F):
         A[(i+1):N,i,:]=np.sin(F[i])
     
     return np.prod(A,axis=1)[::-1,:]
+class solution_class:
+    def __init__(self,**kwargs):
+        for k,v in kwargs.items():
+            if v is not None:
+                self.__dict__[k] = [v]
+            else:
+                self.__dict__[k] = []
+    def update(self,**kwargs):
+        for k,v in kwargs.items():
+            if v is not None:
+                self.__dict__[k] = self.__dict__[k]+[v]
+            else:
+                self.__dict__[k] = self.__dict__[k]+[]
+    def array(self):
+        for k, v in self.__dict__.items():
+            self.__dict__[k] = np.array(v)
+    def strip(self):
+        for k, v in self.__dict__.items():
+            self.__dict__[k] = v[0]
+    def wrap(self):
+        for k, v in self.__dict__.items():
+            self.__dict__[k] = [v]
 class Riemann_tools:
     def __init__(self):
         pass
@@ -223,13 +245,42 @@ class diff_FIM(embedded_manifold):
             #ret    = np.append(ret,ddθnew[i:])
         
         return ret
-    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,dmax=10,T=None)->"computes the geodesic equation":
+    
+    def statistics(self,θ):
+            y  = self.f(self.t,θ)
+            J  = self.J(θ)
+            g  = self.g(θ)
+            Γ2 = self.Γ2(θ)
+            ω0 = self.calc_ω0(θ,0)
+            R  = self.Ricci_R(θ)
+            return y, J, g, Γ2, ω0, R
+    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,T=None)->"computes the geodesic equation":
         def fun(V,t):
             return self.MBAM_RHS(V)
         V0,τ = self.find_MBAM_IC(θ,k)
+        N_parameters=int(np.size(V0)/2)
         if T is None:
-            T    = np.linspace(0,10*τ,100)#np.logspace(np.log10(τ),dmax+np.log10(τ),100)
-        return τ, T,odeint(fun,V0,T)
+            T    = np.linspace(0,10*τ,100)
+            constructed_τ = True
+        else:
+            constructed_τ = False
+        sols = solution_class(y=None,J=None, g=None,
+                              Γ2=None, ω0=None,R=None,τ=None,θ=None, dθ=None,detg=None)
+        S = odeint(fun,V0,T)
+        i = 0
+        while  i < len(T):
+                V = S[i]
+                
+                y, J, g, Γ2, ω0, R=self.statistics(V[:N_parameters])
+                sols.update(y=y, J=J, g=g, Γ2=Γ2, ω0=ω0, R=R,τ=T[i],
+                            θ=V[:N_parameters],dθ=V[N_parameters:],
+                           detg=np.linalg.det(g))
+                i+=1
+        sols.array()
+        if constructed_τ:
+            return τ, sols
+        else:
+            return sols
     
     
 def SymLogNorm(dg:"Values to plot w/ pcolormesh")->"Matplotlib lognorm":
@@ -350,19 +401,7 @@ class MBAM_plotting(diff_FIM):
             ax.legend()
 
 
-class solution_class:
-    def __init__(self,**kwargs):
-        for k,v in kwargs.items():
-            if v is not None:
-                self.__dict__[k] = [v]
-            else:
-                self.__dict__[k] = []
-    def update(self,**kwargs):
-        for k,v in kwargs.items():
-            if v is not None:
-                self.__dict__[k] = self.__dict__[k]+[v]
-            else:
-                self.__dict__[k] = self.__dict__[k]+[]
+
         
 class MBAM_odeint(embedded_manifold):
     def __init__(self, function, T, IC,N_parameters, N_equations,**odeint_kwargs):
@@ -457,8 +496,7 @@ class MBAM_odeint(embedded_manifold):
                            detg=np.linalg.det(g))
                 print(T[i], V[:self.N_parameters])
                 i+=1
-        for k, v in sols.__dict__.items():
-            sols.__dict__[k] = np.array(v)
+        sols.array()
         return sols
     def plot_data(self,ax,T,ys,rs,y):
         for i in range(ys.shape[1]):
