@@ -3,6 +3,8 @@ import autograd.numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from scipy.integrate import odeint
+from scipy.integrate import ode
+from scipy.integrate import solve_ivp
 def N_sphere(F):
     N=F.shape[0]+1
     A=np.zeros((N,)+F.shape)+1
@@ -11,7 +13,82 @@ def N_sphere(F):
         A[(i+1):N,i,:]=np.sin(F[i])
     
     return np.prod(A,axis=1)[::-1,:]
-class diff_FIM:
+class Riemann_tools:
+    def __init__(self):
+        pass
+    def metric_inverse(self, g):
+        try:
+            ginv = np.linalg.inv(g)
+        except:
+            ginv = np.empty(g.shape)
+            ginv.fill(np.nan)
+        return ginv
+    def metric_Γ2(self,g, Γ1):
+        return np.einsum('ij,jab->iab',self.metric_inverse(g),Γ1)
+    def metric_eigenproblem(self,g):
+        try:
+            epr = np.linalg.eigh(g)
+        except:
+            epr = []
+            v = np.empty(g.shape[0])
+            λ = np.empty(g.shape)
+            v.fill(np.nan)
+            λ.fill(np.nan)
+            epr=[v,λ]
+        return epr
+    def metric_eigenvalues(self, g)->"kth eigenvalue":
+        return self.metric_eigenproblem(g)[0]
+    def metric_eigenvalue(self, g,k=0)->"kth eigenvalue":
+        return self.metric_eigenproblem(g)[0][k]
+    def metric_eigenvector(self, g,k=0)->"kth eigenvalue":
+        return self.metric_eigenproblem(g)[1][:,k]
+    def metric_determinant(self,g)->"determinant of g":
+        return np.linalg.det(self.g)
+    def metric_signature(self,g)->"Metric signature":
+        return np.sum(np.sign(self.metric_eigenvalues(g)))
+    def metric_tetrad(self,g)->"Finds tetrad and inverse tetrad of g":
+        v,e0=self.metric_eigenproblem(g)
+        e=np.einsum('ia,ab->ib',e0,np.diag(np.sqrt(v)))
+        einv=np.einsum('ia,ab->ib',e0,np.diag(1/np.sqrt(v)))
+        return e,einv
+    
+class embedded_manifold(Riemann_tools):
+    def __init__(self):
+         Riemann_tools.__init__(self)
+    def embedded_metric(self,J):
+        return np.einsum('im,in',J,J)
+    def embedded_Γ1(self,J, H):
+        return np.einsum('im,iab->mab',J,H)
+    def embedded_Γ2(self,J, H,g):
+        return self.metric_Γ2(g,self.embedded_Γ1(J,H))
+    def normal_projection_operator(self, J, g):
+        P1=np.einsum('mn,im,jn',self.metric_inverse(g),J,J)
+        return 1-P1
+    def embedded_Riemann_tensor(self, H, P):
+        return np.einsum('ima,ij,jbn->mnab',H,P,H)-np.einsum('imb,ij,jan->mnab',H,P,H)
+    def embedded_Ricci_tensor(self,H, g, P):
+        gi = self.metric_inverse(g)
+        return np.einsum('iab,ab,ij,jmn->mn',H,gi,P,H)-np.einsum('ins,ij,as,jam->mn',H,P,gi,H)
+    def embedded_Ricci_scalar(self,H, g, P):
+        gi = self.metric_inverse(g)
+        return np.einsum('iam,ma,ij,jbn,bn',H,gi,P,H,gi)-np.einsum('ims,ij,jab,ma,sb',H,P,H,gi,gi)
+    def embedded_velocity2(self,g,dθ):
+        return np.einsum('m,mn,n',dθ,g,dθ)
+    def embedded_acceleration2(self, H,P,dθ):
+        a=np.einsum('imn,ij,jab',H,P,H)
+        return np.einsum('m,n,a,b,mnab',dθ,dθ,dθ,dθ,a)
+    def embedded_radius(self, H,P,g,dθ)->"Extrinsic curvature radius":
+        v2=self.embedded_velocity2(g,dθ)
+        a2=self.embedded_acceleration2(H,P,dθ)
+        return v2/np.sqrt(a2)
+    def embedded_ω(self,H,P,g,dθ)->"Extrinsic frequency":
+        v2=self.embedded_velocity2(g,dθ)
+        a2=self.embedded_acceleration2(H,P,dθ)
+        return np.sqrt(np.abs(v2*a2))
+    def embedded_ω0(self,H,P,g,k=0)->"Extrinsic frequency in the k-th eigendirection":
+        v=self.metric_eigenvector(g,k)
+        return self.embedded_ω(H,P,g,v)/(2*np.pi)
+class diff_FIM(embedded_manifold):
     def __init__(self,t:"x-axis measurements", y:"measurements",σ:"errors",model:"model function"):
         self.t  = t
         self.y  = y
@@ -19,82 +96,54 @@ class diff_FIM:
         self.σ  = σ
         self.J  = au.jacobian(lambda θ:(y-model(t,θ))/σ)#,argnum=1)
         self.H  = au.hessian(lambda θ:(y-model(t,θ))/σ)#,argnum=1)
+        embedded_manifold.__init__(self)
     def _r(self, θ:"Model parameters")->"Residuals":
         return (self.y-self.f(self.t,θ))/self.σ
     def χ2(self, θ:"Model parameters")->"χ^2 value":
         return np.sum((self.y-self.f(self.t,θ))**2/self.σ**2)
     def g(self, θ:"Model parameters")->"FIM for parameters θ":
-        J=self.J(θ)
-        return np.einsum('im,in',J,J)
+        return self.embedded_metric(self.J(θ))
     def eigval(self, θ:"Model parameters",k=0)->"kth eigenvalue for parameters θ":
-        g = self.g(θ)
-        return np.linalg.eigh(g)[0][k]
+        return self.metric_eigenvalue(self.g(θ),k)
     def eigvector(self, θ:"Model parameters",k=0)->"kth eigenvalue for parameters θ":
-        g = self.g(θ)
-        return np.linalg.eigh(g)[1][:,k]
+        return self.metric_eigenvector(self.g(θ),k)
     def detg(self,θ:"Model parameters")->"determinant of FIM":
-        return np.linalg.det(self.g(θ))
+        return self.metric_determinant(self.g(θ))
     def signature(self,θ:"Model parameters")->"Metric signature":
-        return np.sum(np.sign(np.linalg.eigvals(self.g(θ))))
+        return self.metric_signature(self.g(θ))
     def ginv(self,θ:"Model parameters")->"Metric inverse":
-        J=self.J(θ)
-        return np.linalg.inv(np.einsum('im,in',J,J))
+        return self.metric_inverse(self.g(θ))
     def Γ1(self,θ:"Model parameters")->"Christoffel symbols of the first kind":
-        J=self.J(θ)
-        H=self.H(θ)
-        return np.einsum('im,iab',J,H)
+        return self.embedded_Γ1(self.J(θ),self.H(θ))
     def Γ2(self,θ:"Model parameters")->"Christoffel symbols of the second kind":
-        return np.einsum('ij,jab',self.ginv(θ),self.Γ1(θ))
+        return self.embedded_Γ2(self.J(θ), self.H(θ),self.g(θ))
     def P(self,θ:"Model parameters")->"Residual space normal projection operator":
-        J=self.J(θ)
-        g=self.g(θ)
-        P1=np.einsum('mn,im,jn',g,J,J)
-        return 1-P1
+        return self.normal_projection_operator(self.J(θ),self.g(θ))
     def Riemann(self,θ:"Model parameters")->"Riemann tensor":
-        H=self.H(θ)
-        P=self.P(θ)
-        return np.einsum('ima,ij,jbn->mnab',H,P,H)-np.einsum('imb,ij,jan->mnab',H,P,H)
-
+        return self.embedded_Riemann_tensor(self.H(θ), self.P(θ))
     def Ricci(self,θ:"Model parameters")->"Ricci tensor":
-        H=self.H(θ)
-        g=self.g(θ)
-        P=self.P(θ)
-        return np.einsum('iab,ab,ij,jmn->mn',H,g,P,H)-np.einsum('ins,ij,as,jam->mn',H,P,g,H)
+        return self.embedded_Ricci_tensor(self.H(θ), self.g(θ), self.P(θ))
     def Ricci_R(self,θ:"Model parameters")->"Ricci curvature scalar":
-        H=self.H(θ)
-        g=self.g(θ)
-        P=self.P(θ)
-        return np.einsum('iam,ma,ij,jbn,bn',H,g,P,H,g)-np.einsum('ims,ij,jab,ma,sb',H,P,H,g,g)
+        return self.embedded_Ricci_scalar(self.H(θ), self.g(θ), self.P(θ))
     def external_v2(self,θ:"Model parameters",dθ:"derivatives of model parameters")->"Residual space velocity^2":
-        g=self.g(θ)
-        return np.einsum('m,mn,n',dθ,g,dθ)
+        return self.embedded_velocity2(self.g(θ),dθ)
     def external_a2(self, θ:"Model parameters",dθ:"derivatives of model parameters")->"Residual space acceleration^2":
-        H=self.H(θ)
-        P=self.P(θ)
-        a=np.einsum('imn,ij,jab',H,P,H)
-        return np.einsum('m,n,a,b,mnab',dθ,dθ,dθ,dθ,a)
+        return self.embedded_acceleration2(self.H(θ),self.P(θ),dθ)
     def external_R(self, θ:"Model parameters",dθ:"derivatives of model parameters")->"Extrinsic curvature radius":
         v2=self.external_v2(θ,dθ)
         a2=self.external_a2(θ,dθ)
         return v2/np.sqrt(a2)
     def external_ω(self,θ:"Model parameters",dθ:"derivatives of model parameters")->"Extrinsic frequency":
-        v2=self.external_v2(θ,dθ)
-        a2=self.external_a2(θ,dθ)
-        return np.sqrt(np.abs(v2*a2))
+        
+        return self.embedded_ω(self.H(θ),self.P(θ),self.g(θ),dθ)
     def external_ωv(self,θ:"Model parameters",dθ:"derivatives of model parameters")->"Extrinsic normalized frequency":
         v2=self.external_v2(θ,dθ)
         a2=self.external_a2(θ,dθ)
         return np.sqrt(np.abs(a2))
     def calc_ω0(self,θ:"Model parameters",k:"index of the k-th smallest eigenvalue of g")->"Extrinsic frequency in the k-th eigendirection":
-        g=self.g(θ)
-        w,v=np.linalg.eigh(g)
-        vn=v[:,k]
-        return self.external_ω(θ,vn)/(2*np.pi)
+        return self.embedded_ω0(self.H(θ),self.P(θ),self.g(θ),k)
     def find_tetrad(self,θ:"Model parameters")->"Finds tetrad and inverse tetrad of FIM":
-        v,e0=np.linalg.eig(self.g(θ))
-        e=np.einsum('ia,ab->ib',e0,np.diag(np.sqrt(v)))
-        einv=np.einsum('ia,ab->ib',e0,np.diag(1/np.sqrt(v)))
-        return e,einv
+        return self.metric_tetrad(self.g(θ))
     def compute_sphere(self,θ:"Model parameters",Npoints:"Mesh size"=10)->"Computes points on a sphere of unit radius":
         g       = self.g(θ)
         e,einv  = self.find_tetrad(θ)
@@ -126,7 +175,7 @@ class diff_FIM:
         g = self.g(θ)
         N = g.shape[0]
         if np.linalg.matrix_rank(g)==N:
-            λ,v    = np.linalg.eigh(g)
+            λ,v    = self.metric_eigenproblem(g)
             V = v[:,k]
             θ2   = np.einsum('i,j,ij',θ, θ,g)
             v2   = np.einsum('i,j,ij',V,V,g)  
@@ -146,7 +195,7 @@ class diff_FIM:
             V[i]   = 1
             gnew = self.delete_offending_index(g,i)
             θnew = self.delete_offending_index(θ,i)
-            λ,v    = np.linalg.eigh(gnew)
+            λ,v    = self.metric_eigenproblem(gnew)
             θ2   = np.einsum('i,j,ij',θnew, θnew,gnew)
             v2   = np.einsum('i,j,ij',v[:,0],v[:,0],gnew)
         τ = np.sqrt(θ2/v2)
@@ -174,7 +223,7 @@ class diff_FIM:
             #ret    = np.append(ret,ddθnew[i:])
         
         return ret
-    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,dmax=10,T=0)->"computes the geodesic equation":
+    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,dmax=10,T=None)->"computes the geodesic equation":
         def fun(V,t):
             return self.MBAM_RHS(V)
         V0,τ = self.find_MBAM_IC(θ,k)
@@ -223,7 +272,7 @@ class MBAM_plotting(diff_FIM):
         if θ is None:
             θ = self.θ_bf
         c,c0,ωv,A=self.compute_ω_sphere(θ,Npoints=10)
-        w,v=np.linalg.eigh(self.g(θ))
+        w,v=self.metric_eigenproblem(self.g(θ))
         f,ax=plt.subplots(1,3,figsize=(23,7))
         ax[0].plot(c[0],c[1],'k',ls='-',zorder=0)
         ax[1].plot(c0[0],c0[1],'k',zorder=0)
@@ -299,3 +348,128 @@ class MBAM_plotting(diff_FIM):
             ax.set_xticklabels([r"$\theta^{"+"%d"%i+"}$" for i in range(Nθ)])
         if labels is not None:
             ax.legend()
+
+
+class solution_class:
+    def __init__(self,**kwargs):
+        for k,v in kwargs.items():
+            if v is not None:
+                self.__dict__[k] = [v]
+            else:
+                self.__dict__[k] = []
+    def update(self,**kwargs):
+        for k,v in kwargs.items():
+            if v is not None:
+                self.__dict__[k] = self.__dict__[k]+[v]
+            else:
+                self.__dict__[k] = self.__dict__[k]+[]
+        
+class MBAM_odeint(embedded_manifold):
+    def __init__(self, function, T, IC,N_parameters, N_equations,**odeint_kwargs):
+        self.T            = T
+        self.IC           = IC
+        self.function     = function
+        self.N_parameters = N_parameters
+        self.N_equations  = N_equations
+        self.odeint_kwargs = odeint_kwargs
+        embedded_manifold.__init__(self)
+
+    def find_solutions(self,θ, full_output=True):
+        if 'full_output' in self.odeint_kwargs.keys():
+            K, fo=odeint(self.function,self.IC,self.T,args=(θ,),**self.odeint_kwargs)
+        else:
+            K=odeint(self.function,self.IC,self.T,args=(θ,),**self.odeint_kwargs)
+        y, J, H = self._construct_yJH(K)
+        g  = self.embedded_metric(J)
+        Γ2 = self.embedded_Γ2(J,H,g)
+        if full_output:
+            P  = self.normal_projection_operator(J, g)
+            ω0 = self.embedded_ω0(H,P,g)
+            R  = self.embedded_Ricci_scalar(H, g, P)
+            return y, J, g, Γ2, ω0, R
+        else:
+            return Γ2
+        
+
+    def _construct_H_from_triu(self,h):
+        H = np.zeros((self.N_parameters,self.N_parameters))
+        H[np.triu_indices(self.N_parameters)]=h
+        H = H+H.T-np.diag(H)
+        return H
+    
+    def _construct_J(self,K):
+        J = K[:,self.N_equations:self.N_equations*(1+self.N_parameters)]
+        j = np.array([[j[k::self.N_equations] 
+                 for k in range(self.N_equations)] for j in J])
+        
+        return -np.vstack([j[:,i,:] for i in range(self.N_equations)])
+    
+    def _construct_H(self,K):
+        H = K[:,self.N_equations*(1+self.N_parameters):]
+        h = np.array([[self._construct_H_from_triu(h[k::self.N_equations]) 
+                       for k in range(self.N_equations)] for h in H])
+        return -np.vstack([h[:,i,:,:] for i in range(self.N_equations)])
+    
+    def _construct_yJH(self,K):
+        y = K[:,:self.N_equations]
+        j = self._construct_J(K)
+        h = self._construct_H(K)
+        return y, j, h
+    
+    def rhs(self,t,V):
+        θ = V[:self.N_parameters]
+        dθ = V[self.N_parameters:]
+        Γ2 = self.find_solutions(θ,False)
+        return np.append(θ,-np.einsum('abc,b,c',Γ2,dθ,dθ))
+    def rhs_odeint(self,V,t):
+        θ = V[:self.N_parameters]
+        dθ = V[self.N_parameters:]
+        Γ2 = self.find_solutions(θ,False)
+        return np.append(θ,-np.einsum('abc,b,c',Γ2,dθ,dθ))
+    
+    def run_MBAM(self,IC, T,do_odeint=True,**odeint_kwargs)->"computes the geodesic equation":
+        self.times = T
+        
+        sols = solution_class(y=None,J=None, g=None,
+                              Γ2=None, ω0=None,R=None,τ=None,θ=None, dθ=None,detg=None)
+        if do_odeint:
+            S = odeint(self.rhs_odeint,IC,T,**odeint_kwargs)
+            #S = solve_ivp(self.rhs_odeint,[0,np.max(T)],IC,t_eval=T,**odeint_kwargs)
+            i = 0
+            while  i < len(T):
+                V = S[i]
+                y, J, g, Γ2, ω0, R=self.find_solutions(V[:self.N_parameters])
+                sols.update(y=y, J=J, g=g, Γ2=Γ2, ω0=ω0, R=R,τ=T[i],
+                            θ=V[:self.N_parameters],dθ=V[self.N_parameters:],
+                           detg=np.linalg.det(g))
+                i+=1
+        else:
+            r = ode(self.rhs)
+            r.set_integrator('vode', method='bdf')
+            r.set_initial_value(IC, 0)
+            i = 0
+            SL = []
+            while r.successful() and i < len(T):
+                V =r.integrate(T[i])
+                y, J, g, Γ2, ω0, R=self.find_solutions(V[:self.N_parameters])
+                sols.update(y=y, J=J, g=g, Γ2=Γ2, ω0=ω0, R=R,τ=T[i],
+                            θ=V[:self.N_parameters],dθ=V[self.N_parameters:],
+                           detg=np.linalg.det(g))
+                print(T[i], V[:self.N_parameters])
+                i+=1
+        for k, v in sols.__dict__.items():
+            sols.__dict__[k] = np.array(v)
+        return sols
+    def plot_data(self,ax,T,ys,rs,y):
+        for i in range(ys.shape[1]):
+            ax[0].errorbar(T,ys[:,i],yerr=1,fmt='o',capsize=2)
+            ax[1].errorbar(T,rs[:,i],yerr=1,fmt='o',capsize=2)
+        
+        ax[0].plot(T,y,'k')
+        ax[0].set_xlabel('$t$')
+        ax[0].set_ylabel('$y(t)$')
+        ax[1].axhline(0,color='k')
+        ax[1].set_xlabel('$t$')
+        ax[1].set_ylabel('$r(t)$')
+    def bar_plot(self,*args,**kwargs):
+        MBAM_plotting.bar_plot(None,*args,**kwargs)
