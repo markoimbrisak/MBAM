@@ -245,7 +245,18 @@ class diff_FIM(embedded_manifold):
             #ret    = np.append(ret,ddθnew[i:])
         
         return ret
-    
+    def MBAM_jac_RHS(self,V:"2N dimensional initial conditions vector")->"RHS of the geodesic equation":
+        N   = int(np.size(V)/2)
+        θ   = V[:N]
+        dθ  = V[N:]
+        g   = self.g(θ)
+        ret = np.c_[np.zeros((N,N)),np.diag(N*[1])]
+        if np.linalg.matrix_rank(g)==N:
+            ret1 = np.c_[np.zeros((N,N)),-2*np.einsum('a,bi,cab->ci',dθ,np.diag(N*[1]),self.Γ2(θ))]
+            ret  = np.r_[ret,ret1]
+        else:
+            return np.array(2*N*[np.nan])
+        return ret
     def statistics(self,θ):
             y  = self.f(self.t,θ)
             J  = self.J(θ)
@@ -254,9 +265,11 @@ class diff_FIM(embedded_manifold):
             ω0 = self.calc_ω0(θ,0)
             R  = self.Ricci_R(θ)
             return y, J, g, Γ2, ω0, R
-    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,T=None)->"computes the geodesic equation":
+    def run_MBAM(self,θ:"Model parameters",k:"Initial eigendirection"=0,T=None,use_dfun=False,**odekwargs)->"computes the geodesic equation":
         def fun(V,t):
             return self.MBAM_RHS(V)
+        def funD(V,t):
+            return self.MBAM_jac_RHS(V)
         V0,τ = self.find_MBAM_IC(θ,k)
         N_parameters=int(np.size(V0)/2)
         if T is None:
@@ -266,7 +279,10 @@ class diff_FIM(embedded_manifold):
             constructed_τ = False
         sols = solution_class(y=None,J=None, g=None,
                               Γ2=None, ω0=None,R=None,τ=None,θ=None, dθ=None,detg=None)
-        S = odeint(fun,V0,T)
+        if use_dfun:
+            S = odeint(fun,V0,T,Dfun=funD,**odekwargs)
+        else:
+            S = odeint(fun,V0,T,**odekwargs)
         i = 0
         while  i < len(T):
                 V = S[i]
